@@ -1,0 +1,190 @@
+package com.example.aquacomm
+
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Bundle
+import android.util.Log
+import android.view.SurfaceView
+import android.view.WindowManager
+import android.widget.Toast
+import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
+import com.example.aquacomm.databinding.ActivityReceiveBinding
+import org.opencv.android.*
+import org.opencv.core.*
+import org.opencv.imgproc.Imgproc
+
+class ReceiveActivity : AppCompatActivity(), CameraBridgeViewBase.CvCameraViewListener2 {
+
+    private lateinit var binding: ActivityReceiveBinding
+    private val TAG = "AquaComm_Receiver"
+    private val CAMERA_PERMISSION_REQUEST_CODE = 200
+
+    private val my5BitLogicMap = mapOf(
+        "....." to 'A', "....-" to 'B', "...-." to 'C', "...--" to 'D', "..-.." to 'E',
+        "..-.-" to 'F', "..--." to 'G', "..---" to 'H', ".-..." to 'I', ".-..-" to 'J',
+        ".-.-." to 'K', ".-.--" to 'L', ".---." to 'M', ".----" to 'N', "-...." to 'O',
+        "-...-" to 'P', "-..-." to 'Q', "-..--" to 'R', "-.-.." to 'S', "-.-.-" to 'T',
+        "-.--." to 'U', "-.---" to 'V', "--..." to 'W', "--..-" to 'X', "--.-." to 'Y',
+        "----." to 'Z'
+    )
+
+    // Improved Signal Variables
+    private var maxObserved = 100.0
+    private var minObserved = 50.0
+    private var smoothedBrightness = 0.0
+    private var bitBuffer = StringBuilder()
+    private var lastStateChange = System.currentTimeMillis()
+    private var isLightActive = false
+    private var charProcessed = true
+    
+    private val ROI_SIZE = 160
+    private val MIN_BRIGHTNESS_FLOOR = 80.0 
+    private var roiCenter = Point(0.0, 0.0)
+
+    private val mLoaderCallback = object : BaseLoaderCallback(this) {
+        override fun onManagerConnected(status: Int) {
+            if (status == LoaderCallbackInterface.SUCCESS) {
+                checkCameraPermission()
+            } else {
+                super.onManagerConnected(status)
+            }
+        }
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        binding = ActivityReceiveBinding.inflate(layoutInflater)
+        setContentView(binding.root)
+        binding.cameraSurface.setCvCameraViewListener(this)
+
+        binding.receivedText.text = ""
+    }
+
+    override fun onCameraFrame(inputFrame: CameraBridgeViewBase.CvCameraViewFrame): Mat {
+        val rgba = inputFrame.rgba()
+        val gray = inputFrame.gray()
+
+        // 1. IMPROVED TRACKING
+        val globalMMR = Core.minMaxLoc(gray)
+        val currentMax = globalMMR.maxVal
+        
+        if (currentMax > MIN_BRIGHTNESS_FLOOR) {
+            val brightestPoint = globalMMR.maxLoc
+            if (roiCenter.x == 0.0 && roiCenter.y == 0.0) {
+                roiCenter = brightestPoint
+            } else {
+                roiCenter.x = (0.2 * brightestPoint.x) + (0.8 * roiCenter.x)
+                roiCenter.y = (0.2 * brightestPoint.y) + (0.8 * roiCenter.y)
+            }
+        }
+
+        // 2. ROI EXTRACTION
+        val x = (roiCenter.x - ROI_SIZE / 2).coerceIn(0.0, (gray.cols() - ROI_SIZE).toDouble()).toInt()
+        val y = (roiCenter.y - ROI_SIZE / 2).coerceIn(0.0, (gray.rows() - ROI_SIZE).toDouble()).toInt()
+        val roiRect = Rect(x, y, ROI_SIZE, ROI_SIZE)
+        val roiGray = gray.submat(roiRect)
+
+        // 3. SIGNAL SMOOTHING
+        Imgproc.GaussianBlur(roiGray, roiGray, Size(7.0, 7.0), 0.0)
+        val currentRaw = Core.mean(roiGray).`val`[0]
+        smoothedBrightness = (0.5 * currentRaw) + (0.5 * smoothedBrightness)
+
+        // 4. FAST ADAPTIVE THRESHOLDING (EMA Based)
+        if (smoothedBrightness > maxObserved) {
+            maxObserved = smoothedBrightness
+        } else {
+            maxObserved = maxObserved * 0.99 + smoothedBrightness * 0.01
+        }
+
+        if (smoothedBrightness < minObserved) {
+            minObserved = smoothedBrightness
+        } else {
+            minObserved = minObserved * 0.99 + smoothedBrightness * 0.01
+        }
+        
+        val signalGap = maxObserved - minObserved
+        val dynamicThreshold = (maxObserved + minObserved) / 2.0
+        val hysteresis = (signalGap * 0.12).coerceIn(5.0, 12.0)
+
+        // Visual Feedback
+        val isBright = smoothedBrightness > (dynamicThreshold + hysteresis)
+        val isDim = smoothedBrightness < (dynamicThreshold - hysteresis)
+        
+        val statusColor = if (isLightActive) Scalar(0.0, 255.0, 0.0) else Scalar(255.0, 0.0, 0.0)
+        Imgproc.rectangle(rgba, roiRect.tl(), roiRect.br(), statusColor, 4)
+        Imgproc.circle(rgba, roiCenter, 10, Scalar(255.0, 255.0, 255.0), -1)
+
+        // 5. DECODING STATE MACHINE
+        val now = System.currentTimeMillis()
+        val duration = now - lastStateChange
+
+        if (isBright && signalGap > 15.0) {
+            if (!isLightActive) {
+                isLightActive = true
+                lastStateChange = now
+                charProcessed = false
+            }
+        } else {
+            if (isLightActive && isDim) {
+                // Pulse ended
+                if (duration in 80..380) {
+                    bitBuffer.append(".")
+                } else if (duration > 380) {
+                    bitBuffer.append("-")
+                }
+                isLightActive = false
+                lastStateChange = now
+            } else if (!isLightActive) {
+                // Check for character gap (800ms in TransmitActivity)
+                if (duration > 700 && bitBuffer.isNotEmpty() && !charProcessed) {
+                    decodeBuffer()
+                    charProcessed = true
+                }
+                // Safety reset for very long silence or garbage
+                if (duration > 2000 && bitBuffer.isNotEmpty()) {
+                    bitBuffer.setLength(0)
+                    charProcessed = true
+                }
+            }
+        }
+
+        roiGray.release()
+        return rgba
+    }
+
+    private fun decodeBuffer() {
+        val code = bitBuffer.toString().trim()
+        val decoded = my5BitLogicMap[code]
+        runOnUiThread {
+            if (decoded != null) {
+                binding.receivedText.append(decoded.toString())
+                Log.d(TAG, "Decoded: $code -> $decoded")
+            } else if (code.length >= 5) {
+                binding.receivedText.append("?")
+            }
+        }
+        bitBuffer.setLength(0)
+    }
+
+    private fun checkCameraPermission() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), CAMERA_PERMISSION_REQUEST_CODE)
+        } else {
+            binding.cameraSurface.setCameraPermissionGranted()
+            binding.cameraSurface.enableView()
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (!OpenCVLoader.initLocal()) OpenCVLoader.initAsync(OpenCVLoader.OPENCV_VERSION, this, mLoaderCallback)
+        else mLoaderCallback.onManagerConnected(LoaderCallbackInterface.SUCCESS)
+    }
+
+    override fun onPause() { super.onPause(); binding.cameraSurface.disableView() }
+    override fun onCameraViewStarted(w: Int, h: Int) {}
+    override fun onCameraViewStopped() {}
+}
