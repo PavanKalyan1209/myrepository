@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Smooth Wave Simulator</title>
+    <style>
+        body { font-family: 'Segoe UI', Arial, sans-serif; background: #121212; color: #e0e0e0; display: flex; flex-direction: column; align-items: center; margin: 0; padding: 20px; }
+        canvas { background: #000; border: 2px solid #333; border-radius: 8px; box-shadow: 0 0 20px rgba(0,255,255,0.1); cursor: crosshair; }
+        .controls-container { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 15px; width: 100%; max-width: 900px; margin-top: 20px; }
+        .card { background: #1e1e1e; padding: 15px; border-radius: 10px; border: 1px solid #333; }
+        label { display: block; margin-bottom: 8px; font-size: 0.9em; color: #aaa; }
+        .val { float: right; color: #00d4ff; font-weight: bold; }
+        input[type="range"] { width: 100%; margin: 10px 0; accent-color: #00d4ff; }
+        input[type="number"] { width: 100%; padding: 8px; background: #2d2d2d; border: 1px solid #444; color: white; border-radius: 4px; box-sizing: border-box; }
+        .btn-row { display: flex; gap: 4px; margin-top: 5px; }
+        button { flex: 1; padding: 6px; border: none; border-radius: 4px; background: #3d3d3d; color: white; cursor: pointer; font-size: 0.8em; }
+        button:hover { background: #505050; }
+        .reset-btn { background: #007bff; margin-top: 10px; font-weight: bold; }
+        .reset-btn:hover { background: #0056b3; }
+    </style>
+</head>
+<body>
+
+    <h2>String Wave Physics Simulation</h2>
+    <canvas id="waveCanvas" width="850" height="400"></canvas>
+
+    <div class="controls-container">
+        <div class="card">
+            <label>Frequency (Hz) <span id="fDisplay" class="val">1.50</span></label>
+            <input type="range" id="freq" min="0" max="10" step="0.01" value="1.50">
+            <div class="btn-row">
+                <button onclick="window.adj('freq', -1)">-1</button>
+                <button onclick="window.adj('freq', -0.1)">-0.1</button>
+                <button onclick="window.adj('freq', 0.1)">+0.1</button>
+                <button onclick="window.adj('freq', 1)">+1</button>
+            </div>
+        </div>
+
+        <div class="card">
+            <label>Amplitude <span id="aDisplay" class="val">60</span></label>
+            <input type="range" id="amp" min="0" max="180" step="1" value="60">
+            <div class="btn-row">
+                <button onclick="window.adj('amp', -1)">-1</button>
+                <button onclick="window.adj('amp', -0.1)">-0.1</button>
+                <button onclick="window.adj('amp', 0.1)">+0.1</button>
+                <button onclick="window.adj('amp', 1)">+1</button>
+            </div>
+        </div>
+
+        <div class="card">
+            <label>Damping (Friction)</label>
+            <input type="range" id="damp" min="0" max="0.1" step="0.001" value="0.01">
+        </div>
+
+        <div class="card">
+            <label>Tension (T) | Mass (μ) | Particles</label>
+            <div style="display: flex; gap: 5px;">
+                <input type="number" id="tens" value="160" title="Tension">
+                <input type="number" id="mu" value="1.0" title="Mass per unit">
+                <input type="number" id="parts" value="100" title="Particles">
+            </div>
+            <button class="reset-btn" onclick="window.init()">Apply & Restart Simulation</button>
+        </div>
+    </div>
+
+<script>
+    const canvas = document.getElementById('waveCanvas');
+    const ctx = canvas.getContext('2d');
+    
+    let particles = [];
+    let time = 0;
+
+    // 1. Global adjustment helper
+    window.adj = function(id, amt) {
+        const el = document.getElementById(id);
+        let newVal = parseFloat(el.value) + amt;
+        el.value = Math.max(el.min, Math.min(el.max, newVal)).toFixed(2);
+    };
+
+    // 2. Initialize System
+    window.init = function() {
+        const count = parseInt(document.getElementById('parts').value) || 50;
+        particles = [];
+        for (let i = 0; i < count; i++) {
+            particles.push({ y: 200, v: 0 });
+        }
+        time = 0;
+    };
+
+    function update() {
+        // Read UI
+        const f = parseFloat(document.getElementById('freq').value);
+        const a = parseFloat(document.getElementById('amp').value);
+        const d = parseFloat(document.getElementById('damp').value);
+        const T = parseFloat(document.getElementById('tens').value);
+        const m = parseFloat(document.getElementById('mu').value);
+
+        document.getElementById('fDisplay').innerText = f.toFixed(2);
+        document.getElementById('aDisplay').innerText = a;
+
+        if (particles.length === 0) return;
+
+        // Drive the Source (Particle 0)
+        time += 0.08; 
+        particles[0].y = 200 + Math.sin(time * f) * a;
+
+        // Physics: Discrete Wave Equation
+        // F = T * (d2y / dx2)
+        for (let i = 1; i < particles.length - 1; i++) {
+            const forceLeft = (particles[i-1].y - particles[i].y) * (T / 100);
+            const forceRight = (particles[i+1].y - particles[i].y) * (T / 100);
+            
+            const acceleration = (forceLeft + forceRight) / m;
+            
+            particles[i].v += acceleration;
+            particles[i].v *= (1 - d); // Damping
+            particles[i].y += particles[i].v;
+        }
+
+        render();
+        requestAnimationFrame(update);
+    }
+
+    function render() {
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        if (particles.length < 2) return;
+
+        const spacing = canvas.width / (particles.length - 1);
+
+        // Draw the smooth string using Quadratic Curves
+        ctx.beginPath();
+        ctx.strokeStyle = '#00d4ff';
+        ctx.lineWidth = 3;
+        ctx.lineJoin = 'round';
+        ctx.moveTo(0, particles[0].y);
+
+        for (let i = 0; i < particles.length - 1; i++) {
+            const xCurrent = i * spacing;
+            const xNext = (i + 1) * spacing;
+            const xMid = (xCurrent + xNext) / 2;
+            const yMid = (particles[i].y + particles[i+1].y) / 2;
+            
+            // Use quadratic curve to midpoint for smoothness
+            ctx.quadraticCurveTo(xCurrent, particles[i].y, xMid, yMid);
+        }
+
+        // Draw to the final particle
+        ctx.lineTo(canvas.width, particles[particles.length-1].y);
+        ctx.stroke();
+
+        // Draw individual particles (small faded dots)
+        particles.forEach((p, i) => {
+            ctx.fillStyle = i === 0 ? '#ff4757' : 'rgba(255, 255, 255, 0.2)';
+            ctx.beginPath();
+            ctx.arc(i * spacing, p.y, 2, 0, Math.PI * 2);
+            ctx.fill();
+        });
+    }
+
+    // Start
+    window.init();
+    update();
+</script>
+</body>
+</html>
