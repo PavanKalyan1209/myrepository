@@ -1,35 +1,38 @@
 from vpython import *
 
 # --- Scene ---
-scene = canvas(title="Standing Wave Formation",
+scene = canvas(title="Melde's Experiment Simulation",
                width=1200, height=600,
                background=color.black)
 
-scene.autoscale = False
-scene.center = vector(10, 0, 0)
-
-# 🔥 Fix zoom issue
-scene.range = 15
-scene.userspin = True
-scene.userzoom = True
-
-# --- Constants ---
 L = 20
-v = 5.0
+scene.center = vector(L/2, 0, 0)
+scene.range = L/2 + 5
+scene.autoscale = False
 
+# --- State ---
 state = {
-    "freq": 1.0,
+    "freq": 0.5,
     "amp": 1.5,
     "points": 80,
-    "right_fixed": True   # 🔥 toggle state
+    "damping": 0.01,
+    "right_fixed": True
 }
 
 particles = []
 string_curve = None
 
-# --- Create System ---
+# Wave arrays
+y = []
+y_prev = []
+y_next = []
+
+v = 10  # wave speed
+dt = 0.005
+
+# --- Create system ---
 def create_system():
-    global particles, string_curve
+    global particles, string_curve, y, y_prev, y_next
 
     for p in particles:
         p.visible = False
@@ -41,104 +44,115 @@ def create_system():
     n = state["points"]
     dx = L / (n + 1)
 
+    y = [0]*(n+2)
+    y_prev = [0]*(n+2)
+    y_next = [0]*(n+2)
+
     string_curve = curve(color=color.white, radius=0.05)
-    string_curve.append(vector(0, 0, 0))
 
-    for i in range(1, n + 1):
-        x = i * dx
-        p = sphere(pos=vector(x, 0, 0), radius=0.18, color=color.cyan)
-        particles.append(p)
-        string_curve.append(p.pos)
-
-    string_curve.append(vector(L, 0, 0))
+    for i in range(n+2):
+        x = i*dx
+        if i == 0 or i == n+1:
+            string_curve.append(vector(x, 0, 0))
+        else:
+            p = sphere(pos=vector(x, 0, 0), radius=0.22, color=color.cyan)
+            particles.append(p)
+            string_curve.append(p.pos)
 
 create_system()
 
 # Walls
-left_wall = box(pos=vector(0, 0, 0), size=vector(0.2, 4, 0.2), color=color.gray(0.7))
-right_wall = box(pos=vector(L, 0, 0), size=vector(0.2, 4, 0.2), color=color.gray(0.7))
+box(pos=vector(0,0,0), size=vector(0.2,4,0.2), color=color.gray(0.7))
+box(pos=vector(L,0,0), size=vector(0.2,4,0.2), color=color.gray(0.7))
 
 # --- UI ---
-scene.append_to_caption("\n\nFrequency:\n")
+scene.append_to_caption("\n")
 
 def update_freq(s):
     state["freq"] = s.value
-    freq_label.text = f"{state['freq']:.2f} Hz"
+    freq_label.text = f"{state['freq']:.2f}"
 
-freq_slider = slider(min=0.1, max=50, value=1, step=0.1, bind=update_freq)
-freq_label = wtext(text=" 1.00 Hz\n")
-
-scene.append_to_caption("\nAmplitude:\n")
+scene.append_to_caption("Freq ")
+slider(min=0.1, max=1.5, value=0.5, step=0.01, bind=update_freq)
+freq_label = wtext(text="0.50   ")
 
 def update_amp(s):
     state["amp"] = s.value
     amp_label.text = f"{state['amp']:.2f}"
 
-amp_slider = slider(min=0.5, max=3, value=1.5, step=0.1, bind=update_amp)
-amp_label = wtext(text=" 1.50\n")
+scene.append_to_caption(" Amp ")
+slider(min=0.5, max=3, value=1.5, step=0.1, bind=update_amp)
+amp_label = wtext(text="1.50   ")
 
-scene.append_to_caption("\n\nParticles:\n")
+def update_damping(s):
+    state["damping"] = s.value
+    damp_label.text = f"{state['damping']:.3f}"
 
-def increase_points(b):
-    state["points"] += 10
-    create_system()
+scene.append_to_caption(" Damp ")
+slider(min=0, max=0.1, value=0.01, step=0.001, bind=update_damping)
+damp_label = wtext(text="0.01   ")
 
-def decrease_points(b):
-    state["points"] = max(5, state["points"] - 5)
-    create_system()
+scene.append_to_caption(" Particles ")
 
-button(text="Increase", bind=increase_points)
-button(text="Decrease", bind=decrease_points)
+def set_particles(inp):
+    try:
+        val = int(inp.text)
+        if val >= 1:
+            state["points"] = val
+            create_system()
+    except:
+        pass
 
-# 🔥 Boundary Toggle
-scene.append_to_caption("\n\nRight End Condition:\n")
+winput(bind=set_particles, text="80")
+
+scene.append_to_caption("   ")
 
 def toggle_boundary(b):
     state["right_fixed"] = not state["right_fixed"]
-    if state["right_fixed"]:
-        b.text = "Fixed End"
-    else:
-        b.text = "Free End"
+    b.text = "Fixed" if state["right_fixed"] else "Free"
 
-boundary_button = button(text="Fixed End", bind=toggle_boundary)
+button(text="Fixed", bind=toggle_boundary)
 
-# --- Animation ---
+# --- Simulation loop ---
 t = 0
-dt = 0.02
 
 while True:
     rate(200)
 
-    omega = 2 * pi * state["freq"]
-    k = 2 * pi * state["freq"] / v
-    A = state["amp"]
+    n = state["points"]
+    dx = L/(n+1)
+    c = v * dt / dx
 
-    string_curve.clear()
-    string_curve.append(vector(0, 0, 0))
+    # Stability condition
+    if c > 1:
+        continue
 
-    for p in particles:
-        x = p.pos.x
+    # --- Left end (driven) ---
+    y[0] = state["amp"] * sin(2*pi*state["freq"]*t)
 
-        if state["right_fixed"]:
-            # 🔵 Fixed-Fixed → standing wave
-            y = A * sin(k*x - omega*t) + A * sin(k*x + omega*t)
+    # --- Update interior ---
+    for i in range(1, n+1):
+        y_next[i] = (2*y[i] - y_prev[i] +
+                     c**2*(y[i+1] - 2*y[i] + y[i-1]) -
+                     state["damping"]*(y[i] - y_prev[i]))
 
-        else:
-            # 🟢 Fixed-Free → reflection without inversion
-            y = A * sin(k*x - omega*t) + A * sin(k*(2*L - x) - omega*t)
-
-        p.pos.y = y
-
-        intensity = abs(y) / (2*A)
-        p.color = vector(intensity, 0.8, 1 - intensity)
-
-        string_curve.append(p.pos)
-
-    # Right endpoint behavior
+    # --- Right boundary ---
     if state["right_fixed"]:
-        string_curve.append(vector(L, 0, 0))
+        y_next[n+1] = 0  # node
     else:
-        # Free end moves → take last particle height
-        string_curve.append(vector(L, particles[-1].pos.y, 0))
+        y_next[n+1] = y_next[n]  # free end (zero slope)
+
+    # --- Update arrays ---
+    y_prev = y[:]
+    y = y_next[:]
+
+    # --- Update visuals ---
+    for i, p in enumerate(particles):
+        p.pos.y = y[i+1]
+
+        intensity = abs(y[i+1]) / (state["amp"] + 1e-5)
+        p.color = vector(intensity, 0.8, 1-intensity)
+
+        string_curve.modify(i+1, p.pos)
 
     t += dt
