@@ -1,7 +1,7 @@
 from vpython import *
 
 # --- Scene ---
-scene = canvas(title="Melde's Experiment Simulation",
+scene = canvas(title="Wave Simulator",
                width=1200, height=600,
                background=color.black)
 
@@ -22,13 +22,15 @@ state = {
 particles = []
 string_curve = None
 
-# Wave arrays
 y = []
 y_prev = []
 y_next = []
 
-v = 10  # wave speed
+v = 10
 dt = 0.005
+t = 0
+
+needs_update = False
 
 # --- Create system ---
 def create_system():
@@ -65,47 +67,90 @@ create_system()
 box(pos=vector(0,0,0), size=vector(0.2,4,0.2), color=color.gray(0.7))
 box(pos=vector(L,0,0), size=vector(0.2,4,0.2), color=color.gray(0.7))
 
-# --- UI ---
-scene.append_to_caption("\n")
+# --- RESET ---
+def reset_simulation():
+    global y, y_prev, y_next, t
 
+    n = state["points"]
+    y = [0]*(n+2)
+    y_prev = [0]*(n+2)
+    y_next = [0]*(n+2)
+    t = 0
+
+# --- MODE BUTTONS ---
+mode_buttons = []
+
+# ✅ Create "Modes:" label ONCE
+scene.append_to_caption("\n\nModes: ")
+
+def rebuild_modes():
+    global mode_buttons
+
+    # Delete old buttons
+    for b in mode_buttons:
+        b.delete()
+
+    mode_buttons = []
+
+    base = 0.25
+
+    def set_mode(n):
+        f = base * n
+        state["freq"] = f
+        freq_slider.value = f
+        freq_label.text = f"{f:.2f}"
+
+    # Create buttons in same line
+    for i in range(1, state["points"] + 1):
+        b = button(text=str(i), bind=lambda b, n=i: set_mode(n))
+        mode_buttons.append(b)
+
+# --- UI ---
+scene.append_to_caption("\n\n")
+
+# Frequency
 def update_freq(s):
     state["freq"] = s.value
     freq_label.text = f"{state['freq']:.2f}"
 
 scene.append_to_caption("Freq ")
-slider(min=0.1, max=1.5, value=0.5, step=0.01, bind=update_freq)
-freq_label = wtext(text="0.50   ")
+freq_slider = slider(min=0.1, max=1.5, value=0.5, step=0.01, bind=update_freq)
+freq_label = wtext(text="0.50     ")
 
+rebuild_modes()
+
+# Amplitude
 def update_amp(s):
     state["amp"] = s.value
     amp_label.text = f"{state['amp']:.2f}"
 
-scene.append_to_caption(" Amp ")
+scene.append_to_caption("\n\nAmp ")
 slider(min=0.5, max=3, value=1.5, step=0.1, bind=update_amp)
-amp_label = wtext(text="1.50   ")
+amp_label = wtext(text="1.50     ")
 
+# Damping
 def update_damping(s):
     state["damping"] = s.value
     damp_label.text = f"{state['damping']:.3f}"
 
-scene.append_to_caption(" Damp ")
+scene.append_to_caption("     Damp ")
 slider(min=0, max=0.1, value=0.01, step=0.001, bind=update_damping)
-damp_label = wtext(text="0.01   ")
+damp_label = wtext(text="0.01     ")
 
-scene.append_to_caption(" Particles ")
+# Particles
+def update_particles(s):
+    global needs_update
+    state["points"] = int(s.value)
+    particle_label.text = f"{state['points']}"
+    rebuild_modes()
+    needs_update = True
 
-def set_particles(inp):
-    try:
-        val = int(inp.text)
-        if val >= 1:
-            state["points"] = val
-            create_system()
-    except:
-        pass
+scene.append_to_caption("     Particles ")
+slider(min=1, max=120, value=80, step=1, bind=update_particles)
+particle_label = wtext(text="80     ")
 
-winput(bind=set_particles, text="80")
-
-scene.append_to_caption("   ")
+# Boundary toggle
+scene.append_to_caption("     ")
 
 def toggle_boundary(b):
     state["right_fixed"] = not state["right_fixed"]
@@ -113,40 +158,41 @@ def toggle_boundary(b):
 
 button(text="Fixed", bind=toggle_boundary)
 
-# --- Simulation loop ---
-t = 0
+# Reset
+scene.append_to_caption("     ")
+button(text="Reset", bind=lambda b: reset_simulation())
 
+# --- Simulation loop ---
 while True:
     rate(200)
+
+    if needs_update:
+        create_system()
+        reset_simulation()
+        needs_update = False
 
     n = state["points"]
     dx = L/(n+1)
     c = v * dt / dx
 
-    # Stability condition
     if c > 1:
         continue
 
-    # --- Left end (driven) ---
     y[0] = state["amp"] * sin(2*pi*state["freq"]*t)
 
-    # --- Update interior ---
     for i in range(1, n+1):
         y_next[i] = (2*y[i] - y_prev[i] +
                      c**2*(y[i+1] - 2*y[i] + y[i-1]) -
                      state["damping"]*(y[i] - y_prev[i]))
 
-    # --- Right boundary ---
     if state["right_fixed"]:
-        y_next[n+1] = 0  # node
+        y_next[n+1] = 0
     else:
-        y_next[n+1] = y_next[n]  # free end (zero slope)
+        y_next[n+1] = y_next[n]
 
-    # --- Update arrays ---
     y_prev = y[:]
     y = y_next[:]
 
-    # --- Update visuals ---
     for i, p in enumerate(particles):
         p.pos.y = y[i+1]
 
